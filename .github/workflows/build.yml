@@ -22,13 +22,18 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Check project files
+      - name: Find project folder
         run: |
-          ls -la
-          ls -la app || echo "MISSING: app folder"
-          test -f settings.gradle.kts || echo "MISSING: settings.gradle.kts"
-          test -f build.gradle.kts || echo "MISSING: build.gradle.kts"
-          test -f postit.keystore || echo "MISSING: postit.keystore"
+          echo "Files in repo:"
+          find . -maxdepth 3 -not -path './.git/*' | sort
+          SETTINGS=$(find . -maxdepth 3 \( -name settings.gradle.kts -o -name settings.gradle \) -not -path './.git/*' | head -n1)
+          if [ -z "$SETTINGS" ]; then
+            echo "::error::settings.gradle.kts was not uploaded. Upload it to the project folder (next to the app folder)."
+            exit 1
+          fi
+          DIR=$(dirname "$SETTINGS")
+          echo "Project folder: $DIR"
+          echo "PROJECT_DIR=$DIR" >> "$GITHUB_ENV"
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
@@ -41,13 +46,24 @@ jobs:
         with:
           gradle-version: "8.9"
 
+      - name: Create signing key if missing
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          if [ ! -f postit.keystore ]; then
+            echo "::warning::postit.keystore not found, generating a temporary one."
+            keytool -genkeypair -keystore postit.keystore -storepass postit123 -keypass postit123 -alias postit -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=PostIt, O=Junnel Entoma, C=PH"
+          fi
+
       - name: Build debug and release APKs
+        working-directory: ${{ env.PROJECT_DIR }}
         run: gradle assembleDebug assembleRelease --console=plain
 
       - name: Show signing SHA-1 (for Google Cloud Console)
+        working-directory: ${{ env.PROJECT_DIR }}
         run: keytool -list -v -keystore postit.keystore -storepass postit123 -alias postit | grep -E "SHA1|SHA256"
 
       - name: Collect APKs
+        working-directory: ${{ env.PROJECT_DIR }}
         run: |
           mkdir -p dist
           cp app/build/outputs/apk/debug/app-debug.apk dist/PostIt-debug.apk
@@ -57,7 +73,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: PostIt-apk
-          path: dist/*.apk
+          path: ${{ env.PROJECT_DIR }}/dist/*.apk
           if-no-files-found: error
 
       # Push a tag such as v1.0 to publish a Release with the APKs attached
@@ -65,4 +81,4 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/*.apk
+          files: ${{ env.PROJECT_DIR }}/dist/*.apk
