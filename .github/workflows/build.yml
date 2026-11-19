@@ -22,17 +22,29 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Find project folder
+      - name: Find project folder (unzips the project if it was uploaded as a .zip)
         run: |
-          echo "Files in repo:"
-          find . -maxdepth 3 -not -path './.git/*' | sort
-          SETTINGS=$(find . -maxdepth 3 \( -name settings.gradle.kts -o -name settings.gradle \) -not -path './.git/*' | head -n1)
+          find_settings() {
+            find . -maxdepth 5 \( -name settings.gradle.kts -o -name settings.gradle \) -not -path './.git/*' | head -n1
+          }
+          SETTINGS=$(find_settings)
           if [ -z "$SETTINGS" ]; then
-            echo "::error::settings.gradle.kts was not uploaded. Upload it to the project folder (next to the app folder)."
+            echo "No settings.gradle.kts found, looking for a .zip to unzip..."
+            find . -maxdepth 3 -name '*.zip' -not -path './.git/*' | while read -r z; do
+              echo "Unzipping $z"
+              unzip -oq "$z" -d unzipped
+            done
+            SETTINGS=$(find_settings)
+          fi
+          if [ -z "$SETTINGS" ]; then
+            echo "Files in repo:"
+            find . -maxdepth 3 -not -path './.git/*' | sort
+            echo "::error::Could not find settings.gradle.kts. Upload the project files or the project .zip."
             exit 1
           fi
           DIR=$(dirname "$SETTINGS")
           echo "Project folder: $DIR"
+          ls -la "$DIR"
           echo "PROJECT_DIR=$DIR" >> "$GITHUB_ENV"
 
       - name: Set up JDK 17
@@ -46,39 +58,26 @@ jobs:
         with:
           gradle-version: "8.9"
 
-      - name: Create signing key if missing
+      - name: Build debug APK
         working-directory: ${{ env.PROJECT_DIR }}
-        run: |
-          if [ ! -f postit.keystore ]; then
-            echo "::warning::postit.keystore not found, generating a temporary one."
-            keytool -genkeypair -keystore postit.keystore -storepass postit123 -keypass postit123 -alias postit -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=PostIt, O=Junnel Entoma, C=PH"
-          fi
+        run: gradle assembleDebug --console=plain
 
-      - name: Build debug and release APKs
-        working-directory: ${{ env.PROJECT_DIR }}
-        run: gradle assembleDebug assembleRelease --console=plain
-
-      - name: Show signing SHA-1 (for Google Cloud Console)
-        working-directory: ${{ env.PROJECT_DIR }}
-        run: keytool -list -v -keystore postit.keystore -storepass postit123 -alias postit | grep -E "SHA1|SHA256"
-
-      - name: Collect APKs
+      - name: Collect APK
         working-directory: ${{ env.PROJECT_DIR }}
         run: |
           mkdir -p dist
-          cp app/build/outputs/apk/debug/app-debug.apk dist/PostIt-debug.apk
-          cp app/build/outputs/apk/release/app-release.apk dist/PostIt-release.apk
+          cp app/build/outputs/apk/debug/app-debug.apk dist/PostIt.apk
 
-      - name: Upload APKs
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: PostIt-apk
-          path: ${{ env.PROJECT_DIR }}/dist/*.apk
+          path: ${{ env.PROJECT_DIR }}/dist/PostIt.apk
           if-no-files-found: error
 
-      # Push a tag such as v1.0 to publish a Release with the APKs attached
+      # Push a tag such as v1.0 to publish a Release with the APK attached
       - name: Publish GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: ${{ env.PROJECT_DIR }}/dist/*.apk
+          files: ${{ env.PROJECT_DIR }}/dist/PostIt.apk
